@@ -1,0 +1,25 @@
+#trt_sliders {
+    background-color: var(--background-fill-secondary);
+    border-radius: 1em;
+    padding: 1em;
+}
+
+#trt_sliders div.styler {
+    gap: 1em;
+}
+
+#trt_sliders div.gradio-row {
+    gap: 1em;
+}
+
+#trt_sliders div.form {
+    background: var(--body-background-fill);
+    border-radius: 1em;
+    padding: 1em;
+    gap: 1em;
+}
+
+
+#trt_sliders div.block.gradio-slider {
+    background: unset !important;
+}
