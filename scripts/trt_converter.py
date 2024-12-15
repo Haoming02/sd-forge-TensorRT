@@ -16,7 +16,7 @@ from lib_trt.logging import logger
 class TensorRTConverter:
 
     @staticmethod
-    def setup_timing_cache(config: trt.IBuilderConfig):
+    def load_timing_cache(config: trt.IBuilderConfig):
         """Sets up the builder to use the timing cache file, and creates it if it does not already exist"""
 
         if os.path.exists(TIMING_CACHE):
@@ -146,8 +146,8 @@ class TensorRTConverter:
             ]
         )
 
-        os.makedirs(TEMP_DIR, exist_ok=True)
-        output_onnx = os.path.join(TEMP_DIR, f"{filename}.onnx")
+        output_onnx = os.path.join(os.path.join(TEMP_DIR, filename), "model.onnx")
+        os.makedirs(os.path.dirname(output_onnx))
 
         if not os.path.isfile(output_onnx):
             torch.onnx.export(
@@ -182,7 +182,7 @@ class TensorRTConverter:
 
         config = builder.create_builder_config()
         profile = builder.create_optimization_profile()
-        TensorRTConverter.setup_timing_cache(config)
+        TensorRTConverter.load_timing_cache(config)
         config.progress_monitor = TQDMProgressMonitor()
 
         prefix_encode = ""
@@ -208,7 +208,7 @@ class TensorRTConverter:
         with open(output_trt, "wb") as f:
             f.write(serialized_engine)
 
-        TensorRTConverter.save_timing_cache(config)
+        # TensorRTConverter.save_timing_cache(config)
         return "Success!"
 
     @staticmethod
