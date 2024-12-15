@@ -1,7 +1,6 @@
 from ldm_patched.modules import model_management
 from modules_forge.unet_patcher import UnetPatcher
 from modules.script_callbacks import on_ui_tabs
-from modules.paths import models_path
 from modules import shared
 
 import tensorrt as trt
@@ -9,17 +8,12 @@ import gradio as gr
 import torch
 import os
 
+from lib_trt.utils import TIMING_CACHE, TEMP_DIR, OUTPUT_DIR
 from lib_trt.tqdm import TQDMProgressMonitor
 from lib_trt.logging import logger
 
 
-ext = os.path.dirname(os.path.realpath(__file__))
-TIMING_CACHE = os.path.join(os.path.dirname(ext), "timing_cache.dat")
-OUTPUT_DIR = os.path.normpath(os.path.join(models_path, "unet-trt"))
-TEMP_DIR = os.path.normpath(os.path.join(models_path, "unet-onnx"))
-
-
-class TRT_MODEL_CONVERSION:
+class TensorRTConverter:
 
     @staticmethod
     def setup_timing_cache(config: trt.IBuilderConfig):
@@ -27,11 +21,11 @@ class TRT_MODEL_CONVERSION:
 
         if os.path.exists(TIMING_CACHE):
             with open(TIMING_CACHE, mode="rb") as timing_cache_file:
-                logger.debug(f"Read {len(buffer)} bytes from timing cache")
                 buffer = timing_cache_file.read()
+                logger.debug(f"Read {len(buffer)} bytes from timing cache")
         else:
-            logger.debug("No timing cache found; Initializing a new one.")
             buffer = b""
+            logger.debug("No timing cache found; Initializing a new one.")
 
         timing_cache: trt.ITimingCache = config.create_timing_cache(buffer)
         config.set_timing_cache(timing_cache, ignore_mismatch=True)
@@ -148,16 +142,17 @@ class TRT_MODEL_CONVERSION:
         output_onnx = os.path.join(os.path.join(TEMP_DIR, filename), "model.onnx")
         os.makedirs(os.path.dirname(output_onnx), exist_ok=True)
 
-        torch.onnx.export(
-            unet,
-            inputs,
-            output_onnx,
-            verbose=False,
-            input_names=input_names,
-            output_names=output_names,
-            dynamic_axes=dynamic_axes,
-            opset_version=17,
-        )
+        if not os.path.isfile(output_onnx):
+            torch.onnx.export(
+                unet,
+                inputs,
+                output_onnx,
+                verbose=False,
+                input_names=input_names,
+                output_names=output_names,
+                dynamic_axes=dynamic_axes,
+                opset_version=17,
+            )
 
         model_management.unload_all_models()
         model_management.soft_empty_cache()
@@ -180,7 +175,7 @@ class TRT_MODEL_CONVERSION:
 
         config = builder.create_builder_config()
         profile = builder.create_optimization_profile()
-        TRT_MODEL_CONVERSION.setup_timing_cache(config)
+        TensorRTConverter.setup_timing_cache(config)
         config.progress_monitor = TQDMProgressMonitor()
 
         prefix_encode = ""
@@ -207,7 +202,7 @@ class TRT_MODEL_CONVERSION:
         with open(output_trt, "wb") as f:
             f.write(serialized_engine)
 
-        TRT_MODEL_CONVERSION.save_timing_cache(config)
+        TensorRTConverter.save_timing_cache(config)
 
 
 def _validate(*args: list[int]) -> bool:
@@ -230,7 +225,7 @@ def on_convert(*args: list[int]):
         return
 
     ckpt = shared.sd_model.sd_model_checkpoint
-    TRT_MODEL_CONVERSION.convert(
+    TensorRTConverter.convert(
         shared.sd_model.forge_objects.unet,
         os.path.splitext(os.path.basename(ckpt))[0],
         *args,
