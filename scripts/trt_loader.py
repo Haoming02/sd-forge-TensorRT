@@ -9,11 +9,8 @@ import os
 from lib_trt.utils import trt_datatype_to_torch, OUTPUT_DIR
 from lib_trt.logging import logger
 
+
 trt.init_libnvinfer_plugins(None, "")
-
-
-trt_logger = trt.Logger(trt.Logger.INFO)
-runtime = trt.Runtime(trt_logger)
 
 
 class TrtUnet:
@@ -24,12 +21,14 @@ class TrtUnet:
         if not os.path.isfile(unet_path):
             raise FileNotFoundError(f'Engine "{unet_path}" does not exist...')
 
-        unet = TrtUnet(unet_path)
-        return unet
+        return TrtUnet(unet_path)
 
     def __init__(self, engine_path: str):
+        self.trt_logger = trt.Logger(trt.Logger.ERROR)
+        self.runtime = trt.Runtime(self.trt_logger)
+
         with open(engine_path, "rb") as f:
-            self.engine = runtime.deserialize_cuda_engine(f.read())
+            self.engine = self.runtime.deserialize_cuda_engine(f.read())
 
         self.context = self.engine.create_execution_context()
         self.cudaStream = None
@@ -46,8 +45,7 @@ class TrtUnet:
         timesteps,
         context,
         y=None,
-        control=None,
-        transformer_options=None,
+        *args,
         **kwargs,
     ):
         model_inputs = {"x": x, "timesteps": timesteps, "context": context}
@@ -128,8 +126,8 @@ class SDUnet(sd_unet.SdUnet):
         super().__init__(*args, **kwargs)
         self.model_name = model_name
         self.configs = {"name": model_name, "backend": "trt"}
-        self.engine = None
         self.original_forward: Callable = None
+        self.engine = None
 
     def forward(
         self,
@@ -143,22 +141,18 @@ class SDUnet(sd_unet.SdUnet):
         return self.engine(x, timesteps, context, *args, **kwargs)
 
     def activate(self):
-        if self.engine is None:
-            self.engine = TrtUnet.load_unet(self.model_name)
+        if getattr(self, "engine", None) is None:
+            setattr(self, "engine", TrtUnet.load_unet(self.model_name))
             logger.info(f'Loaded Engine: "{self.model_name}"')
 
         if self.original_forward is None:
-            self.original_forward = (
-                shared.sd_model.forge_objects.unet.model.diffusion_model.forward
-            )
-            shared.sd_model.forge_objects.unet.model.diffusion_model.forward = (
-                self.forward
-            )
+            unet = shared.sd_model.forge_objects.unet
+            self.original_forward = unet.model.diffusion_model.forward
+            unet.model.diffusion_model.forward = self.forward
 
     def deactivate(self):
-        shared.sd_model.forge_objects.unet.model.diffusion_model.forward = (
-            self.original_forward
-        )
+        unet = shared.sd_model.forge_objects.unet
+        unet.model.diffusion_model.forward = self.original_forward
         self.original_forward = None
         del self.engine
 
