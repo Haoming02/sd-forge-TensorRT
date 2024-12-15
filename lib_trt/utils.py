@@ -4,8 +4,11 @@ import tensorrt as trt
 import torch
 import os
 
+
 ext = os.path.dirname(os.path.realpath(__file__))
 TIMING_CACHE = os.path.join(os.path.dirname(ext), "timing_cache.dat")
+DATABASE = os.path.join(os.path.dirname(ext), "database.json")
+
 OUTPUT_DIR = os.path.normpath(os.path.join(models_path, "unet-trt"))
 TEMP_DIR = os.path.normpath(os.path.join(models_path, "unet-onnx"))
 

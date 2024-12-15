@@ -99,16 +99,15 @@ class TrtUnet:
 
         model_inputs_converted[output_binding_name] = out
 
-        # stream = torch.cuda.default_stream(x.device)
         if self.cudaStream is None:
             self.cudaStream = torch.cuda.current_stream().cuda_stream
+
         for i in range(curr_split_batch):
             for k in model_inputs_converted:
                 x = model_inputs_converted[k]
                 self.context.set_tensor_address(
                     k, x[(x.shape[0] // curr_split_batch) * i :].data_ptr()
                 )
-            # self.context.execute_async_v3(stream_handle=stream.cuda_stream)
             self.context.execute_async_v3(stream_handle=self.cudaStream)
 
         return out
@@ -165,6 +164,7 @@ class SDUnet(sd_unet.SdUnet):
 
 
 def list_unets(unet_list):
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
     for obj in os.listdir(OUTPUT_DIR):
         if obj.endswith(".trt"):
             unet_list.append(UnetOption(obj.split(".trt", 1)[0]))

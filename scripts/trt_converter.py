@@ -139,8 +139,8 @@ class TensorRTConverter:
             ]
         )
 
-        output_onnx = os.path.join(os.path.join(TEMP_DIR, filename), "model.onnx")
-        os.makedirs(os.path.dirname(output_onnx), exist_ok=True)
+        os.makedirs(TEMP_DIR, exist_ok=True)
+        output_onnx = os.path.join(TEMP_DIR, f"{filename}.onnx")
 
         if not os.path.isfile(output_onnx):
             torch.onnx.export(
@@ -198,7 +198,6 @@ class TensorRTConverter:
         serialized_engine = builder.build_serialized_network(network, config)
 
         output_trt = os.path.join(OUTPUT_DIR, f"{filename}.trt")
-        os.makedirs(os.path.dirname(output_trt), exist_ok=True)
         with open(output_trt, "wb") as f:
             f.write(serialized_engine)
 
@@ -215,9 +214,9 @@ def _validate(*args: list[int]) -> bool:
 
     if all([args[i * 3 + 0] <= args[i * 3 + 1] <= args[i * 3 + 2] for i in range(4)]):
         return True
-
-    logger.error("Invalid Value Range(s)...")
-    return False
+    else:
+        logger.error("Invalid Value Range(s)...")
+        return False
 
 
 def on_convert(*args: list[int]):
