@@ -38,22 +38,29 @@ class TensorRTConverter:
             timing_cache_file.write(memoryview(timing_cache.serialize()))
 
     @staticmethod
-    def convert(
-        model: UnetPatcher,
-        filename: str,
-        batch_size_min: int,
-        batch_size_opt: int,
-        batch_size_max: int,
-        width_min: int,
-        width_opt: int,
-        width_max: int,
-        height_min: int,
-        height_opt: int,
-        height_max: int,
-        context_min: int,
-        context_opt: int,
-        context_max: int,
-    ) -> bool:
+    def convert(*args: list[int]) -> str:
+        if err := TensorRTConverter.validate(*args):
+            logger.error(err)
+            return err
+
+        (
+            batch_size_min,
+            batch_size_opt,
+            batch_size_max,
+            width_min,
+            width_opt,
+            width_max,
+            height_min,
+            height_opt,
+            height_max,
+            context_min,
+            context_opt,
+            context_max,
+        ) = args
+
+        ckpt = shared.sd_model.sd_model_checkpoint
+        model: UnetPatcher = shared.sd_model.forge_objects.unet
+        filename: str = os.path.splitext(os.path.basename(ckpt))[0]
 
         model_management.unload_all_models()
         model_management.load_models_gpu([model])
@@ -62,7 +69,7 @@ class TensorRTConverter:
         context_dim = model.model.model_config.unet_config.get("context_dim", None)
         if context_dim is None:
             logger.error("Model is not supported...")
-            return False
+            return "Model is not supported..."
 
         context_len = 77
         y_dim = model.model.adm_channels
@@ -171,7 +178,7 @@ class TensorRTConverter:
             logger.error("Failed to load the Onnx Model:")
             for idx in range(parser.num_errors):
                 print(parser.get_error(idx))
-            return False
+            return "Failed to load the Onnx Model..."
 
         config = builder.create_builder_config()
         profile = builder.create_optimization_profile()
@@ -202,33 +209,27 @@ class TensorRTConverter:
             f.write(serialized_engine)
 
         TensorRTConverter.save_timing_cache(config)
+        return "Success!"
 
+    @staticmethod
+    def validate(*args: list[int]) -> str:
+        err = ""
 
-def _validate(*args: list[int]) -> bool:
-    if (
-        shared.sd_model.forge_objects.unet.model.diffusion_model.dtype
-        is not torch.float16
-    ):
-        logger.error("Only fp16 precision UNet is supported...")
-        return False
+        if (
+            shared.sd_model.forge_objects.unet.model.diffusion_model.dtype
+            is not torch.float16
+        ):
+            err = "Only fp16 precision UNet is supported..."
 
-    if all([args[i * 3 + 0] <= args[i * 3 + 1] <= args[i * 3 + 2] for i in range(4)]):
-        return True
-    else:
-        logger.error("Invalid Value Range(s)...")
-        return False
+        elif model_management.XFORMERS_IS_AVAILABLE is True:
+            err = "Only PyTorch attention is supported..."
 
+        elif not all(
+            [args[i * 3 + 0] <= args[i * 3 + 1] <= args[i * 3 + 2] for i in range(4)]
+        ):
+            err = "Invalid Value Range(s)..."
 
-def on_convert(*args: list[int]):
-    if not _validate(*args):
-        return
-
-    ckpt = shared.sd_model.sd_model_checkpoint
-    TensorRTConverter.convert(
-        shared.sd_model.forge_objects.unet,
-        os.path.splitext(os.path.basename(ckpt))[0],
-        *args,
-    )
+        return err
 
 
 class Sliders:
@@ -269,36 +270,39 @@ def trt_ui():
         with gr.Row():
             with gr.Group(elem_id="trt_sliders"):
                 args = []
-                gr.HTML('<p align="center">Batch Size</p>')
+                gr.HTML('<h2 align="center">Batch Size</h2>')
                 with gr.Row():
                     args.append(Sliders.batch("Min"))
                     args.append(Sliders.batch("Opt"))
                     args.append(Sliders.batch("Max"))
                 with gr.Row():
                     with gr.Column():
-                        gr.HTML('<p align="center">Width</p>')
+                        gr.HTML('<h3 align="center">Width</h3>')
                         args.append(Sliders.dim("Min", 896))
                         args.append(Sliders.dim("Opt", 1024))
                         args.append(Sliders.dim("Max", 1152))
                     with gr.Column():
-                        gr.HTML('<p align="center">Height</p>')
+                        gr.HTML('<h3 align="center">Height</h3>')
                         args.append(Sliders.dim("Min", 896))
                         args.append(Sliders.dim("Opt", 1024))
                         args.append(Sliders.dim("Max", 1152))
-                gr.HTML('<p align="center">Context Length</p>')
+                gr.HTML('<h2 align="center">Context Length</h2>')
                 with gr.Row():
                     args.append(Sliders.context("Min"))
                     args.append(Sliders.context("Opt"))
                     args.append(Sliders.context("Max"))
 
-                btn = gr.Button("Convert Engine", variant="primary")
-                btn.click(fn=on_convert, inputs=args)
-
-                for comp in args:
-                    comp.do_not_save_to_config = True
+                args.append(gr.Button("Convert Engine", variant="primary"))
 
             with gr.Group(elem_id="trt_docs"):
                 gr.HTML("Tutorial W.I.P")
+                args.append(gr.Textbox(label="Result", value=None, interactive=False))
+
+            for comp in args:
+                comp.do_not_save_to_config = True
+
+            *params, btn, status = args
+            btn.click(fn=TensorRTConverter.convert, inputs=params, outputs=[status])
 
     return [(TRT, "TensorRT", "sd-forge-trt")]
 
