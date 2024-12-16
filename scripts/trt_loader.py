@@ -1,5 +1,4 @@
 from modules.script_callbacks import on_list_unets
-from modules_forge.stream import get_new_stream
 from modules import sd_unet, shared
 
 from typing import Callable
@@ -32,7 +31,7 @@ class TrtUnet:
             self.engine = self.runtime.deserialize_cuda_engine(f.read())
 
         self.context = self.engine.create_execution_context()
-        self.cudaStream = get_new_stream()
+        self.cudaStream = torch.cuda.current_stream().cuda_stream
 
     def set_bindings_shape(self, inputs, split_batch):
         for k in inputs:
@@ -98,16 +97,13 @@ class TrtUnet:
 
         model_inputs_converted[output_binding_name] = out
 
-        if self.cudaStream is None:
-            self.cudaStream = torch.cuda.current_stream()
-
         for i in range(curr_split_batch):
             for k in model_inputs_converted:
                 x = model_inputs_converted[k]
                 self.context.set_tensor_address(
                     k, x[(x.shape[0] // curr_split_batch) * i :].data_ptr()
                 )
-            self.context.execute_async_v3(stream_handle=self.cudaStream.cuda_stream)
+            self.context.execute_async_v3(stream_handle=self.cudaStream)
 
         return out
 
