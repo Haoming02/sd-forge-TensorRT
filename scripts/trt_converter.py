@@ -46,7 +46,8 @@ class TensorRTConverter:
     def convert(*args: list[int]) -> str:
         logger.info("initializing...")
 
-        if err := TensorRTConverter.validate(*args):
+        err: bool | str = TensorRTConverter.validate(*args)
+        if err:
             logger.error(err)
             return err
 
@@ -63,6 +64,7 @@ class TensorRTConverter:
             context_min,
             context_opt,
             context_max,
+            opt_level,
         ) = args
 
         model: UnetPatcher = shared.sd_model.forge_objects.unet
@@ -184,9 +186,8 @@ class TensorRTConverter:
         config = builder.create_builder_config()
         TensorRTConverter.load_timing_cache(config)
         config.progress_monitor = TQDMProgressMonitor()
-        config.set_flag(trt.BuilderFlag.FP16)
-        # config.hardware_compatibility_level = trt.HardwareCompatibilityLevel.AMPERE_PLUS
-        # config.builder_optimization_level = 3
+        config.flags = 1 << int(trt.BuilderFlag.FP16)
+        config.builder_optimization_level = opt_level
 
         profile = builder.create_optimization_profile()
 
@@ -299,14 +300,26 @@ def trt_ui():
                 gr.Markdown(docs)
 
         with gr.Row():
-            args.append(gr.Button("Convert Engine", variant="primary"))
+            with gr.Column():
+                args.append(
+                    gr.Slider(
+                        label="Optimization Level",
+                        minimum=0,
+                        maximum=5,
+                        step=1,
+                        value=3,
+                    )
+                )
+                args.append(gr.Button("Convert Engine", variant="primary"))
             args.append(gr.Textbox(label="Status", value=None, interactive=False))
 
         for comp in args:
             comp.do_not_save_to_config = True
 
         *params, btn, status = args
-        btn.click(fn=TensorRTConverter.convert, inputs=params, outputs=[status])
+        btn.click(fn=lambda: gr.update(interactive=False), outputs=[btn]).then(
+            fn=TensorRTConverter.convert, inputs=[*params], outputs=[status]
+        ).then(fn=lambda: gr.update(interactive=True), outputs=[btn])
 
     return [(TRT, "TensorRT", "sd-forge-trt")]
 
