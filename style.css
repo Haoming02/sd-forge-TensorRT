@@ -1,25 +1,24 @@
-#trt_sliders {
+#tab_sd-forge-trt .trt_block {
     background-color: var(--background-fill-secondary);
     border-radius: 1em;
     padding: 1em;
 }
 
-#trt_sliders div.styler {
+#tab_sd-forge-trt .trt_block div.styler {
     gap: 1em;
 }
 
-#trt_sliders div.gradio-row {
+#tab_sd-forge-trt .trt_block div.gradio-row {
     gap: 1em;
 }
 
-#trt_sliders div.form {
+#tab_sd-forge-trt .trt_block div.form {
     background: var(--body-background-fill);
     border-radius: 1em;
     padding: 1em;
     gap: 1em;
 }
 
-
-#trt_sliders div.block.gradio-slider {
+#tab_sd-forge-trt .trt_block div.block.gradio-slider {
     background: unset !important;
 }

@@ -268,7 +268,7 @@ class Sliders:
 def trt_ui():
     with gr.Blocks() as TRT:
         with gr.Row():
-            with gr.Group(elem_id="trt_sliders"):
+            with gr.Column(elem_classes="trt_block"):
                 args = []
                 gr.HTML('<h2 align="center">Batch Size</h2>')
                 with gr.Row():
@@ -292,11 +292,12 @@ def trt_ui():
                     args.append(Sliders.context("Opt"))
                     args.append(Sliders.context("Max"))
 
-                args.append(gr.Button("Convert Engine", variant="primary"))
-
-            with gr.Group(elem_id="trt_docs"):
+            with gr.Column(elem_classes="trt_block"):
                 gr.HTML("Tutorial W.I.P")
-                args.append(gr.Textbox(label="Result", value=None, interactive=False))
+
+        with gr.Row():
+            args.append(gr.Button("Convert Engine", variant="primary"))
+            args.append(gr.Textbox(label="Status", value=None, interactive=False))
 
             for comp in args:
                 comp.do_not_save_to_config = True
