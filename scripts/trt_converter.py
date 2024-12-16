@@ -7,6 +7,7 @@ import tensorrt as trt
 import gradio as gr
 import warnings
 import torch
+import gc
 import os
 
 from lib_trt.utils import TUTORIAL, TIMING_CACHE, TEMP_DIR, OUTPUT_DIR
@@ -44,6 +45,7 @@ class TensorRTConverter:
             timing_cache_file.write(memoryview(timing_cache.serialize()))
 
     @staticmethod
+    @torch.no_grad()
     def convert(*args: list[int]) -> str:
         logger.info("initializing...")
 
@@ -68,7 +70,7 @@ class TensorRTConverter:
             opt_level,
         ) = args
 
-        model: UnetPatcher = shared.sd_model.forge_objects.unet
+        model: UnetPatcher = shared.sd_model.forge_objects.unet.clone()
 
         context_dim = model.model.model_config.unet_config.get("context_dim", None)
         if context_dim is None:
@@ -163,8 +165,11 @@ class TensorRTConverter:
                     opset_version=17,
                 )
 
+            del unet
+            del inputs
+
         model_management.unload_all_models()
-        model_management.soft_empty_cache()
+        gc.collect()
 
         trt_logger = trt.Logger(trt.Logger.WARNING)
         builder = trt.Builder(trt_logger)
@@ -224,6 +229,9 @@ class TensorRTConverter:
         )
 
         # TensorRTConverter.save_timing_cache(config)
+        model_management.unload_all_models()
+        gc.collect()
+
         logger.info("Success!")
         return "Success!"
 
