@@ -7,9 +7,11 @@ import torch
 import os
 
 from lib_trt.utils import trt_datatype_to_torch, OUTPUT_DIR
+from lib_trt.database import TensorRTDatabase
 from lib_trt.logging import logger
 
 
+TensorRTDatabase.deserialize()
 trt.init_libnvinfer_plugins(None, "")
 
 

@@ -10,6 +10,7 @@ import torch
 import os
 
 from lib_trt.utils import TUTORIAL, TIMING_CACHE, TEMP_DIR, OUTPUT_DIR
+from lib_trt.database import TensorRTDatabase
 from lib_trt.tqdm import TQDMProgressMonitor
 from lib_trt.logging import logger
 
@@ -213,6 +214,14 @@ class TensorRTConverter:
         output_trt = os.path.join(OUTPUT_DIR, f"{filename}.trt")
         with open(output_trt, "wb") as f:
             f.write(serialized_engine)
+
+        TensorRTDatabase.serialize(
+            filename=output_trt,
+            min_width=width_min,
+            max_width=width_max,
+            min_height=height_min,
+            max_height=height_max,
+        )
 
         # TensorRTConverter.save_timing_cache(config)
         logger.info("Success!")

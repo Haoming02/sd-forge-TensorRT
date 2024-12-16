@@ -6,7 +6,7 @@ import os
 
 @dataclass
 class UNetData:
-    name: str
+    filename: str
     min_width: int
     max_width: int
     min_height: int
@@ -20,7 +20,7 @@ class UNetData:
 
     def save(self) -> dict:
         return {
-            "name": self.name,
+            "filename": self.filename,
             "min_width": self.min_width,
             "max_width": self.max_width,
             "min_height": self.min_height,
@@ -32,15 +32,6 @@ class TensorRTDatabase:
     database: list[UNetData] = []
 
     @classmethod
-    def serialize(cls):
-        data = []
-        for unet in cls.database:
-            data.append(unet.save())
-
-        with open(DATABASE, "w+", encoding="utf-8") as db:
-            json.dump(data, db)
-
-    @classmethod
     def deserialize(cls):
         if not os.path.isfile(DATABASE):
             return
@@ -50,3 +41,14 @@ class TensorRTDatabase:
 
         for obj in data:
             cls.database.append(UNetData(**obj))
+
+    @classmethod
+    def serialize(cls, **kwargs):
+        cls.database.append(UNetData(**kwargs))
+
+        data = []
+        for unet in cls.database:
+            data.append(unet.save())
+
+        with open(DATABASE, "w+", encoding="utf-8") as db:
+            json.dump(data, db)
