@@ -5,6 +5,7 @@ from modules import shared
 
 import tensorrt as trt
 import gradio as gr
+import warnings
 import torch
 import os
 
@@ -43,6 +44,8 @@ class TensorRTConverter:
 
     @staticmethod
     def convert(*args: list[int]) -> str:
+        logger.info("initializing...")
+
         if err := TensorRTConverter.validate(*args):
             logger.error(err)
             return err
@@ -62,23 +65,15 @@ class TensorRTConverter:
             context_max,
         ) = args
 
-        ckpt = shared.sd_model.sd_model_checkpoint
         model: UnetPatcher = shared.sd_model.forge_objects.unet
-        filename: str = os.path.splitext(os.path.basename(ckpt))[0]
-
-        model_management.unload_all_models()
-        model_management.load_models_gpu([model])
-        unet = model.model.diffusion_model
 
         context_dim = model.model.model_config.unet_config.get("context_dim", None)
         if context_dim is None:
             logger.error("Model is not supported...")
             return "Model is not supported..."
 
-        context_len = 77
         y_dim = model.model.adm_channels
-        extra_input = {}
-        dtype = torch.float16
+        context_len = 77
 
         input_names = ["x", "timesteps", "context"]
         output_names = ["h"]
@@ -88,27 +83,6 @@ class TensorRTConverter:
             "timesteps": {0: "batch"},
             "context": {0: "batch", 1: "num_embeds"},
         }
-
-        transformer_options = model.model_options["transformer_options"].copy()
-
-        class UNET(torch.nn.Module):
-            def forward(self, x, timesteps, context, *args):
-                extras = input_names[3:]
-                extra_args = {}
-                for i in range(len(extras)):
-                    extra_args[extras[i]] = args[i]
-                return self.unet(
-                    x,
-                    timesteps,
-                    context,
-                    transformer_options=self.transformer_options,
-                    **extra_args,
-                )
-
-        _unet = UNET()
-        _unet.unet = unet
-        _unet.transformer_options = transformer_options
-        unet = _unet
 
         input_channels = model.model.model_config.unet_config.get("in_channels", 4)
 
@@ -135,46 +109,67 @@ class TensorRTConverter:
             inputs_shapes_opt += ((batch_size_opt, y_dim),)
             inputs_shapes_max += ((batch_size_max, y_dim),)
 
-        for k in extra_input:
-            input_names.append(k)
-            dynamic_axes[k] = {0: "batch"}
-            inputs_shapes_min += ((batch_size_min,) + extra_input[k],)
-            inputs_shapes_opt += ((batch_size_opt,) + extra_input[k],)
-            inputs_shapes_max += ((batch_size_max,) + extra_input[k],)
-
-        device = model_management.get_torch_device()
-        inputs = tuple(
-            [
-                torch.randn(shape, dtype=dtype, device=device)
-                for shape in inputs_shapes_opt
-            ]
-        )
+        ckpt = shared.sd_model.sd_model_checkpoint
+        filename: str = os.path.splitext(os.path.basename(ckpt))[0]
 
         output_onnx = os.path.join(os.path.join(TEMP_DIR, filename), "model.onnx")
-        os.makedirs(os.path.dirname(output_onnx))
-
         if not os.path.isfile(output_onnx):
-            torch.onnx.export(
-                unet,
-                inputs,
-                output_onnx,
-                verbose=False,
-                input_names=input_names,
-                output_names=output_names,
-                dynamic_axes=dynamic_axes,
-                opset_version=17,
+
+            model_management.unload_all_models()
+            model_management.load_model_gpu(model)
+            unet = model.model.diffusion_model
+
+            transformer_options = model.model_options["transformer_options"].copy()
+
+            class UNET(torch.nn.Module):
+                def forward(self, x, timesteps, context, *args):
+                    extras = input_names[3:]
+                    extra_args = {}
+                    for i in range(len(extras)):
+                        extra_args[extras[i]] = args[i]
+                    return self.unet(
+                        x,
+                        timesteps,
+                        context,
+                        transformer_options=self.transformer_options,
+                        **extra_args,
+                    )
+
+            _unet = UNET()
+            _unet.unet = unet
+            _unet.transformer_options = transformer_options
+            unet = _unet
+
+            dt, de = torch.float16, model_management.get_torch_device()
+            inputs = tuple(
+                [torch.randn(shape, dtype=dt, device=de) for shape in inputs_shapes_opt]
             )
+
+            logger.info("exporting Onnx...")
+            os.makedirs(os.path.dirname(output_onnx))
+            with warnings.catch_warnings():
+                warnings.simplefilter(action="ignore", category=torch.jit.TracerWarning)
+                torch.onnx.export(
+                    unet,
+                    inputs,
+                    output_onnx,
+                    verbose=False,
+                    input_names=input_names,
+                    output_names=output_names,
+                    dynamic_axes=dynamic_axes,
+                    opset_version=17,
+                )
 
         model_management.unload_all_models()
         model_management.soft_empty_cache()
 
-        # TRT conversion starts here
-        trt_logger = trt.Logger(trt.Logger.INFO)
+        trt_logger = trt.Logger(trt.Logger.WARNING)
         builder = trt.Builder(trt_logger)
 
         network = builder.create_network(
             1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
         )
+
         parser = trt.OnnxParser(network, trt_logger)
         success = parser.parse_from_file(output_onnx)
 
@@ -184,10 +179,16 @@ class TensorRTConverter:
                 print(parser.get_error(idx))
             return "Failed to load the Onnx Model..."
 
+        logger.info("converting TensorRT...")
+
         config = builder.create_builder_config()
-        profile = builder.create_optimization_profile()
         TensorRTConverter.load_timing_cache(config)
         config.progress_monitor = TQDMProgressMonitor()
+        config.set_flag(trt.BuilderFlag.FP16)
+        # config.hardware_compatibility_level = trt.HardwareCompatibilityLevel.AMPERE_PLUS
+        # config.builder_optimization_level = 3
+
+        profile = builder.create_optimization_profile()
 
         prefix_encode = ""
         for k in range(len(input_names)):
@@ -196,44 +197,42 @@ class TensorRTConverter:
             max_shape = inputs_shapes_max[k]
             profile.set_shape(input_names[k], min_shape, opt_shape, max_shape)
 
-            # Encode shapes to filename
             encode = lambda a: ".".join(map(lambda x: str(x), a))
             prefix_encode += "{}#{}#{}#{};".format(
                 input_names[k], encode(min_shape), encode(opt_shape), encode(max_shape)
             )
 
-        assert dtype == torch.float16
-        config.set_flag(trt.BuilderFlag.FP16)
         config.add_optimization_profile(profile)
 
         serialized_engine = builder.build_serialized_network(network, config)
+        if serialized_engine is None:
+            logger.error("Failed to convert the Engine...")
+            return "Failed to convert the Engine..."
 
         output_trt = os.path.join(OUTPUT_DIR, f"{filename}.trt")
         with open(output_trt, "wb") as f:
             f.write(serialized_engine)
 
         # TensorRTConverter.save_timing_cache(config)
+        logger.info("Success!")
         return "Success!"
 
     @staticmethod
     def validate(*args: list[int]) -> str:
-        err = ""
-
         if (
             shared.sd_model.forge_objects.unet.model.diffusion_model.dtype
             is not torch.float16
         ):
-            err = "Only fp16 precision UNet is supported..."
+            return "Only fp16 precision UNet is supported..."
 
-        elif model_management.XFORMERS_IS_AVAILABLE is True:
-            err = "Only PyTorch attention is supported..."
+        if model_management.XFORMERS_IS_AVAILABLE is True:
+            return "Only PyTorch attention is supported..."
 
-        elif not all(
-            [args[i * 3 + 0] <= args[i * 3 + 1] <= args[i * 3 + 2] for i in range(4)]
-        ):
-            err = "Invalid Value Range(s)..."
+        for i in range(4):
+            if not args[i * 3 + 0] <= args[i * 3 + 1] <= args[i * 3 + 2]:
+                return "Invalid Value Range(s)..."
 
-        return err
+        return False
 
 
 class Sliders:
@@ -303,11 +302,11 @@ def trt_ui():
             args.append(gr.Button("Convert Engine", variant="primary"))
             args.append(gr.Textbox(label="Status", value=None, interactive=False))
 
-            for comp in args:
-                comp.do_not_save_to_config = True
+        for comp in args:
+            comp.do_not_save_to_config = True
 
-            *params, btn, status = args
-            btn.click(fn=TensorRTConverter.convert, inputs=params, outputs=[status])
+        *params, btn, status = args
+        btn.click(fn=TensorRTConverter.convert, inputs=params, outputs=[status])
 
     return [(TRT, "TensorRT", "sd-forge-trt")]
 

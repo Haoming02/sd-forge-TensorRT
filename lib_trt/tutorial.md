@@ -38,3 +38,10 @@ Only `SD1` and `SDXL` checkpoints are supported as of now
 The exported Onnx model is somehow corrupted, try deleting the folder and convert again.
 
 </details>
+
+<details>
+<summary>Failed to convert the Engine</summary>
+
+The conversion to TensorRT failed. Check the console for the reason. *(**eg.** Out of Memory)*
+
+</details>
