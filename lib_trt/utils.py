@@ -6,6 +6,7 @@ import os
 
 
 ext = os.path.dirname(os.path.realpath(__file__))
+TUTORIAL = os.path.join(os.path.dirname(ext), "lib_trt", "tutorial.md")
 TIMING_CACHE = os.path.join(os.path.dirname(ext), "timing_cache.dat")
 DATABASE = os.path.join(os.path.dirname(ext), "database.json")
 

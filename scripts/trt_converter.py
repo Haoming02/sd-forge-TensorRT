@@ -8,9 +8,13 @@ import gradio as gr
 import torch
 import os
 
-from lib_trt.utils import TIMING_CACHE, TEMP_DIR, OUTPUT_DIR
+from lib_trt.utils import TUTORIAL, TIMING_CACHE, TEMP_DIR, OUTPUT_DIR
 from lib_trt.tqdm import TQDMProgressMonitor
 from lib_trt.logging import logger
+
+
+with open(TUTORIAL, "r", encoding="utf-8") as md:
+    docs = md.read()
 
 
 class TensorRTConverter:
@@ -260,7 +264,7 @@ class Sliders:
             label=var,
             minimum=1,
             maximum=8,
-            value=2,
+            value=1,
             step=1,
         )
 
@@ -293,7 +297,7 @@ def trt_ui():
                     args.append(Sliders.context("Max"))
 
             with gr.Column(elem_classes="trt_block"):
-                gr.HTML("Tutorial W.I.P")
+                gr.Markdown(docs)
 
         with gr.Row():
             args.append(gr.Button("Convert Engine", variant="primary"))
