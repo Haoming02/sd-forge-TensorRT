@@ -63,7 +63,7 @@ class TensorRTConverter:
     @staticmethod
     def process_filename(family: str, *args: tuple[str | int]) -> str:
         raw: str = args[-1]
-        if not raw:
+        if not bool(raw):
             raw = "{filename}-{w}x{h}"
 
         parsed = (
@@ -75,7 +75,7 @@ class TensorRTConverter:
         )
 
         if "{" in parsed or "}" in parsed:
-            logger.warning("Invalid key in filename...")
+            logger.warning("Invalid pattern in filename...")
 
         return parsed
 
@@ -153,7 +153,9 @@ class TensorRTConverter:
         ckpt = shared.sd_model.sd_model_checkpoint
         family: str = os.path.splitext(os.path.basename(ckpt))[0]
 
-        output_onnx = os.path.join(os.path.join(TEMP_DIR, family), "model.onnx")
+        _onnx = os.path.join(os.path.join(TEMP_DIR, family), "model.onnx")
+        output_onnx = os.path.normpath(os.path.abspath(_onnx))
+
         if not os.path.isfile(output_onnx):
 
             model_management.unload_all_models()
@@ -208,7 +210,8 @@ class TensorRTConverter:
         gc.collect()
 
         filename = TensorRTConverter.process_filename(family, *args)
-        output_trt = os.path.join(OUTPUT_DIR, f"{filename}.trt")
+        _trt = os.path.join(OUTPUT_DIR, f"{filename}.trt")
+        output_trt = os.path.normpath(os.path.abspath(_trt))
 
         if os.path.isfile(output_trt):
             logger.error(f"Engine {output_trt} already exists...")
@@ -253,14 +256,15 @@ class TensorRTConverter:
             )
 
         config.add_optimization_profile(profile)
-        serialized_engine = builder.build_serialized_network(network, config)
-        if serialized_engine is None:
+        built_engine = builder.build_serialized_network(network, config)
+        if built_engine is None:
             logger.error("Failed to convert the Engine...")
             return "Failed to convert the Engine..."
 
         with open(output_trt, "wb") as f:
-            f.write(serialized_engine)
+            f.write(built_engine)
 
+        del built_engine
         TensorRTDatabase.save(
             family=family,
             kwargs={

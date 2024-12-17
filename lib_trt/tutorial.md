@@ -47,3 +47,11 @@ The exported Onnx model is somehow corrupted, try deleting the folder and conver
 The conversion to TensorRT failed. Check the console for the reason. *(**eg.** Out of Memory)*
 
 </details>
+
+## Filename Pattern
+
+- `{filename}`: Name of the Checkpoint
+- `{b}`: Opt. Batch Size
+- `{w}`: Opt. Width
+- `{h}`: Opt. Height
+- `{c}`: Opt. Context Length

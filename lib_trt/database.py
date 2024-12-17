@@ -1,8 +1,9 @@
-from lib_trt.utils import DATABASE, OUTPUT_DIR
-from lib_trt.logging import logger
 from dataclasses import dataclass
 import json
 import os
+
+from lib_trt.utils import DATABASE, OUTPUT_DIR
+from lib_trt.logging import logger
 
 
 @dataclass
@@ -19,8 +20,9 @@ class UNetData:
             and self.min_height <= h <= self.max_height
         )
 
-    def serialize(self) -> dict[str, str | int]:
+    def serialize(self, family: str) -> dict[str, str | int]:
         return {
+            "family": family,
             "filename": self.filename,
             "min_width": self.min_width,
             "max_width": self.max_width,
@@ -73,12 +75,8 @@ class TensorRTDatabase:
 
         for fam, unets in cls.database.items():
             for unet in unets:
-                if fam == family and unet.filename == filename:
-                    continue
-
-                unet_data = unet.serialize()
-                unet_data.update({"family": fam})
-                data.append(unet_data)
+                if fam != family or unet.filename != filename:
+                    data.append(unet.serialize(fam))
 
         with open(DATABASE, "w+", encoding="utf-8") as db:
             json.dump(data, db)
@@ -95,9 +93,7 @@ class TensorRTDatabase:
 
         for fam, unets in cls.database.items():
             for unet in unets:
-                unet_data = unet.serialize()
-                unet_data.update({"family": fam})
-                data.append(unet_data)
+                data.append(unet.serialize(fam))
 
         with open(DATABASE, "w+", encoding="utf-8") as db:
             json.dump(data, db)
