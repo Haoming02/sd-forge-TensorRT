@@ -11,14 +11,14 @@ from lib_trt.database import TensorRTDatabase
 from lib_trt.logging import logger
 
 
-TensorRTDatabase.deserialize()
+TensorRTDatabase.load()
 trt.init_libnvinfer_plugins(None, "")
 
 
 class TrtUnet:
 
     @staticmethod
-    def load_unet(unet_name):
+    def load_unet(unet_name: str):
         unet_path = os.path.join(OUTPUT_DIR, f"{unet_name}.trt")
         if not os.path.isfile(unet_path):
             raise FileNotFoundError(f'Engine "{unet_path}" does not exist...')
@@ -35,7 +35,7 @@ class TrtUnet:
         self.context = self.engine.create_execution_context()
         self.cudaStream = torch.cuda.current_stream().cuda_stream
 
-    def set_bindings_shape(self, inputs, split_batch):
+    def set_bindings_shape(self, inputs: dict, split_batch: int):
         for k in inputs:
             shape = inputs[k].shape
             shape = [shape[0] // split_batch] + list(shape[1:])
@@ -43,10 +43,10 @@ class TrtUnet:
 
     def __call__(
         self,
-        x,
-        timesteps,
-        context,
-        y=None,
+        x: torch.Tensor,
+        timesteps: torch.Tensor,
+        context: torch.Tensor,
+        y: torch.Tensor = None,
         *args,
         **kwargs,
     ):
@@ -159,8 +159,9 @@ class SDUnet(sd_unet.SdUnet):
 def list_unets(unet_list):
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     for obj in os.listdir(OUTPUT_DIR):
-        if obj.endswith(".trt"):
-            unet_list.append(UnetOption(obj.split(".trt", 1)[0]))
+        filename, ext = os.path.splitext(obj)
+        if ext == ".trt":
+            unet_list.append(UnetOption(filename))
 
 
 on_list_unets(list_unets)

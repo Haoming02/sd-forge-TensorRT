@@ -2,6 +2,8 @@
 
 Tutorials W.I.P
 
+> https://docs.nvidia.com/deeplearning/tensorrt/api/python_api/infer/Core/BuilderConfig.html#tensorrt.IBuilderConfig
+
 ## Troubleshooting
 
 <details>

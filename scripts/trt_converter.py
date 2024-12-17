@@ -16,15 +16,14 @@ from lib_trt.tqdm import TQDMProgressMonitor
 from lib_trt.logging import logger
 
 
-with open(TUTORIAL, "r", encoding="utf-8") as md:
-    docs = md.read()
-
-
 class TensorRTConverter:
 
     @staticmethod
     def load_timing_cache(config: trt.IBuilderConfig):
-        """Sets up the builder to use the timing cache file, and creates it if it does not already exist"""
+        """
+        Sets up the builder to use the timing cache file,
+        and creates it if it does not already exist
+        """
 
         if os.path.exists(TIMING_CACHE):
             with open(TIMING_CACHE, mode="rb") as timing_cache_file:
@@ -41,12 +40,48 @@ class TensorRTConverter:
     def save_timing_cache(config: trt.IBuilderConfig):
         """Saves the config's timing cache to file"""
         timing_cache: trt.ITimingCache = config.get_timing_cache()
-        with open(TIMING_CACHE, "wb") as timing_cache_file:
+        with open(TIMING_CACHE, "wb+") as timing_cache_file:
             timing_cache_file.write(memoryview(timing_cache.serialize()))
 
     @staticmethod
+    def validate(*args: tuple[str | int]) -> bool | str:
+        if (
+            shared.sd_model.forge_objects.unet.model.diffusion_model.dtype
+            is not torch.float16
+        ):
+            return "Only fp16 precision UNet is supported..."
+
+        if model_management.XFORMERS_IS_AVAILABLE is True:
+            return "Only PyTorch attention is supported..."
+
+        for i in range(4):
+            if not args[i * 3 + 0] <= args[i * 3 + 1] <= args[i * 3 + 2]:
+                return "Invalid Value Range(s)..."
+
+        return False
+
+    @staticmethod
+    def process_filename(family: str, *args: tuple[str | int]) -> str:
+        raw: str = args[-1]
+        if not raw:
+            raw = "{filename}-{w}x{h}"
+
+        parsed = (
+            raw.replace("{filename}", family)
+            .replace("{b}", str(args[1]))
+            .replace("{w}", str(args[4]))
+            .replace("{h}", str(args[7]))
+            .replace("{c}", str(args[10]))
+        )
+
+        if "{" in parsed or "}" in parsed:
+            logger.warning("Invalid key in filename...")
+
+        return parsed
+
+    @staticmethod
     @torch.no_grad()
-    def convert(*args: list[int]) -> str:
+    def convert(*args: tuple[str | int]) -> str:
         logger.info("initializing...")
 
         err: bool | str = TensorRTConverter.validate(*args)
@@ -68,6 +103,7 @@ class TensorRTConverter:
             context_opt,
             context_max,
             opt_level,
+            _,
         ) = args
 
         model: UnetPatcher = shared.sd_model.forge_objects.unet.clone()
@@ -115,9 +151,9 @@ class TensorRTConverter:
             inputs_shapes_max += ((batch_size_max, y_dim),)
 
         ckpt = shared.sd_model.sd_model_checkpoint
-        filename: str = os.path.splitext(os.path.basename(ckpt))[0]
+        family: str = os.path.splitext(os.path.basename(ckpt))[0]
 
-        output_onnx = os.path.join(os.path.join(TEMP_DIR, filename), "model.onnx")
+        output_onnx = os.path.join(os.path.join(TEMP_DIR, family), "model.onnx")
         if not os.path.isfile(output_onnx):
 
             model_management.unload_all_models()
@@ -171,6 +207,13 @@ class TensorRTConverter:
         model_management.unload_all_models()
         gc.collect()
 
+        filename = TensorRTConverter.process_filename(family, *args)
+        output_trt = os.path.join(OUTPUT_DIR, f"{filename}.trt")
+
+        if os.path.isfile(output_trt):
+            logger.error(f"Engine {output_trt} already exists...")
+            return f"Engine {output_trt} already exists..."
+
         trt_logger = trt.Logger(trt.Logger.WARNING)
         builder = trt.Builder(trt_logger)
 
@@ -210,22 +253,23 @@ class TensorRTConverter:
             )
 
         config.add_optimization_profile(profile)
-
         serialized_engine = builder.build_serialized_network(network, config)
         if serialized_engine is None:
             logger.error("Failed to convert the Engine...")
             return "Failed to convert the Engine..."
 
-        output_trt = os.path.join(OUTPUT_DIR, f"{filename}.trt")
         with open(output_trt, "wb") as f:
             f.write(serialized_engine)
 
-        TensorRTDatabase.serialize(
-            filename=output_trt,
-            min_width=width_min,
-            max_width=width_max,
-            min_height=height_min,
-            max_height=height_max,
+        TensorRTDatabase.save(
+            family=family,
+            kwargs={
+                "filename": filename,
+                "min_width": width_min,
+                "max_width": width_max,
+                "min_height": height_min,
+                "max_height": height_max,
+            },
         )
 
         # TensorRTConverter.save_timing_cache(config)
@@ -234,23 +278,6 @@ class TensorRTConverter:
 
         logger.info("Success!")
         return "Success!"
-
-    @staticmethod
-    def validate(*args: list[int]) -> str:
-        if (
-            shared.sd_model.forge_objects.unet.model.diffusion_model.dtype
-            is not torch.float16
-        ):
-            return "Only fp16 precision UNet is supported..."
-
-        if model_management.XFORMERS_IS_AVAILABLE is True:
-            return "Only PyTorch attention is supported..."
-
-        for i in range(4):
-            if not args[i * 3 + 0] <= args[i * 3 + 1] <= args[i * 3 + 2]:
-                return "Invalid Value Range(s)..."
-
-        return False
 
 
 class Sliders:
@@ -291,44 +318,67 @@ def trt_ui():
         with gr.Row():
             with gr.Column(elem_classes="trt_block"):
                 args = []
-                gr.HTML('<h2 align="center">Batch Size</h2>')
+                gr.HTML('<h3 align="center">Batch Size</h3>')
                 with gr.Row():
                     args.append(Sliders.batch("Min"))
                     args.append(Sliders.batch("Opt"))
                     args.append(Sliders.batch("Max"))
                 with gr.Row():
                     with gr.Column():
-                        gr.HTML('<h3 align="center">Width</h3>')
+                        gr.HTML('<h4 align="center">Width</h4>')
                         args.append(Sliders.dim("Min", 896))
                         args.append(Sliders.dim("Opt", 1024))
                         args.append(Sliders.dim("Max", 1152))
                     with gr.Column():
-                        gr.HTML('<h3 align="center">Height</h3>')
+                        gr.HTML('<h4 align="center">Height</h4>')
                         args.append(Sliders.dim("Min", 896))
                         args.append(Sliders.dim("Opt", 1024))
                         args.append(Sliders.dim("Max", 1152))
-                gr.HTML('<h2 align="center">Context Length</h2>')
+                gr.HTML('<h3 align="center">Context Length</h3>')
                 with gr.Row():
                     args.append(Sliders.context("Min"))
                     args.append(Sliders.context("Opt"))
                     args.append(Sliders.context("Max"))
 
-            with gr.Column(elem_classes="trt_block"):
-                gr.Markdown(docs)
-
-        with gr.Row():
-            with gr.Column():
+                gr.HTML('<h3 align="center">Optimization Level</h3>')
                 args.append(
                     gr.Slider(
-                        label="Optimization Level",
+                        label="Higher: Use more memory and time to compile, to achieve faster inference",
                         minimum=0,
                         maximum=5,
                         step=1,
                         value=3,
                     )
                 )
+
+            with gr.Column(elem_classes="trt_block"):
+                with open(TUTORIAL, "r", encoding="utf-8") as md:
+                    docs = md.read()
+                gr.Markdown(docs)
+                del docs
+
+        with gr.Row():
+            with gr.Column():
+                args.append(
+                    gr.Textbox(
+                        label="Engine Filename",
+                        placeholder="{filename}-{w}x{h}",
+                        value=None,
+                        interactive=True,
+                        max_lines=1,
+                        lines=1,
+                    )
+                )
                 args.append(gr.Button("Convert Engine", variant="primary"))
-            args.append(gr.Textbox(label="Status", value=None, interactive=False))
+            args.append(
+                gr.Textbox(
+                    label="Status",
+                    value=None,
+                    interactive=False,
+                    max_lines=4,
+                    lines=4,
+                )
+            )
 
         for comp in args:
             comp.do_not_save_to_config = True
