@@ -16,6 +16,14 @@ from lib_trt.tqdm import TQDMProgressMonitor
 from lib_trt.logging import logger
 
 
+try:
+    from lib_onnxsim import simplify_onnx
+except ImportError:
+    try_simplify = False
+else:
+    try_simplify = True
+
+
 class TensorRTConverter:
 
     @staticmethod
@@ -82,7 +90,7 @@ class TensorRTConverter:
     @staticmethod
     @torch.no_grad()
     def convert(*args: tuple[str | int]) -> str:
-        logger.info("initializing...")
+        logger.info("Initializing...")
 
         err: bool | str = TensorRTConverter.validate(*args)
         if err:
@@ -188,7 +196,7 @@ class TensorRTConverter:
                 [torch.randn(shape, dtype=dt, device=de) for shape in inputs_shapes_opt]
             )
 
-            logger.info("exporting Onnx...")
+            logger.info("Exporting Onnx...")
             os.makedirs(os.path.dirname(output_onnx))
             with warnings.catch_warnings():
                 warnings.simplefilter(action="ignore", category=torch.jit.TracerWarning)
@@ -208,6 +216,24 @@ class TensorRTConverter:
 
         model_management.unload_all_models()
         gc.collect()
+
+        if try_simplify:
+            simp = os.path.join(f"{os.path.dirname(output_onnx)}-simp", "model.onnx")
+
+            if not os.path.isfile(simp):
+                os.makedirs(os.path.dirname(simp), exist_ok=True)
+                logger.info("Simplifying Onnx model...")
+
+                if not simplify_onnx(output_onnx, simp, shared.sd_model.is_sdxl):
+                    logger.warning("Failed to simplify Onnx model...")
+                    os.rmdir(os.path.dirname(simp))
+
+                model_management.unload_all_models()
+                gc.collect()
+
+            if os.path.isfile(simp):
+                logger.debug("Using simplified Onnx model")
+                output_onnx = simp
 
         filename = TensorRTConverter.process_filename(family, *args)
         _trt = os.path.join(OUTPUT_DIR, f"{filename}.trt")
@@ -233,7 +259,7 @@ class TensorRTConverter:
                 print(parser.get_error(idx))
             return "Failed to load the Onnx Model..."
 
-        logger.info("converting TensorRT...")
+        logger.info("Converting TensorRT...")
 
         config = builder.create_builder_config()
         TensorRTConverter.load_timing_cache(config)

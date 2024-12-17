@@ -8,3 +8,6 @@ if not launch.is_installed("tensorrt"):
 
 if not launch.is_installed("onnx"):
     launch.run_pip("install onnx~=1.17.0", "Onnx")
+
+# if not launch.is_installed("onnxsim"):
+#     launch.run_pip("install onnxsim~=0.4.36", "Onnxsim")
