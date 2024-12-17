@@ -1,7 +1,7 @@
 from modules.script_callbacks import on_list_unets
 from modules import sd_unet, shared
 
-from typing import Callable
+from copy import deepcopy
 import tensorrt as trt
 import torch
 import os
@@ -14,11 +14,14 @@ from lib_trt.logging import logger
 TensorRTDatabase.load()
 trt.init_libnvinfer_plugins(None, "")
 
+CPU = torch.device("cpu")
+GPU = torch.device("cuda")
+
 
 class TrtUnet:
 
     @staticmethod
-    def load_unet(unet_name: str):
+    def load_unet(unet_name: str) -> "TrtUnet":
         unet_path = os.path.join(OUTPUT_DIR, f"{unet_name}.trt")
         if not os.path.isfile(unet_path):
             raise FileNotFoundError(f'Engine "{unet_path}" does not exist...')
@@ -34,6 +37,7 @@ class TrtUnet:
 
         self.context = self.engine.create_execution_context()
         self.cudaStream = torch.cuda.current_stream().cuda_stream
+        self.dtype = torch.float16
 
     def set_bindings_shape(self, inputs: dict, split_batch: int):
         for k in inputs:
@@ -41,6 +45,7 @@ class TrtUnet:
             shape = [shape[0] // split_batch] + list(shape[1:])
             self.context.set_input_shape(k, shape)
 
+    @torch.inference_mode()
     def __call__(
         self,
         x: torch.Tensor,
@@ -125,35 +130,29 @@ class SDUnet(sd_unet.SdUnet):
         super().__init__(*args, **kwargs)
         self.model_name = model_name
         self.configs = {"name": model_name, "backend": "trt"}
-        self.original_forward: Callable = None
+        self.cached_model: torch.nn.Module = None
         self.engine = None
 
-    def forward(
-        self,
-        x: torch.Tensor,
-        timesteps: torch.Tensor,
-        context: torch.Tensor,
-        *args,
-        **kwargs,
-    ) -> torch.Tensor:
-
-        return self.engine(x, timesteps, context, *args, **kwargs)
-
+    @torch.no_grad()
     def activate(self):
         if getattr(self, "engine", None) is None:
             setattr(self, "engine", TrtUnet.load_unet(self.model_name))
             logger.info(f'Loaded Engine: "{self.model_name}"')
 
-        if self.original_forward is None:
-            unet = shared.sd_model.forge_objects.unet
-            self.original_forward = unet.model.diffusion_model.forward
-            unet.model.diffusion_model.forward = self.forward
+        if self.cached_model is None:
+            unet = shared.sd_model.forge_objects.unet.model
+            self.cached_model = deepcopy(unet.diffusion_model.to(CPU))
+            del unet.diffusion_model
+            unet.diffusion_model = self.engine
 
+    @torch.no_grad()
     def deactivate(self):
-        unet = shared.sd_model.forge_objects.unet
-        unet.model.diffusion_model.forward = self.original_forward
-        self.original_forward = None
-        del self.engine
+        if self.cached_model is not None:
+            unet = shared.sd_model.forge_objects.unet.model
+            del unet.diffusion_model
+            del self.engine
+            unet.diffusion_model = deepcopy(self.cached_model).to(GPU)
+            del self.cached_model
 
 
 def list_unets(unet_list):
