@@ -97,3 +97,23 @@ class TensorRTDatabase:
 
         with open(DATABASE, "w+", encoding="utf-8") as db:
             json.dump(data, db)
+
+    @classmethod
+    def get_family(cls, name: str) -> str:
+        for fam, unets in cls.database.items():
+            for unet in unets:
+                if unet.filename == name:
+                    return fam
+
+        return None
+
+    @classmethod
+    def get_suitable(cls, family: str, w: int, h: int) -> str:
+        if not family in cls.database:
+            return None
+
+        for unet in cls.database[family]:
+            if unet.in_range(w, h):
+                return f"[TRT] {unet.filename}"
+
+        return None

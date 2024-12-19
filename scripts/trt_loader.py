@@ -1,9 +1,11 @@
+from ldm_patched.modules.model_management import soft_empty_cache
 from modules.script_callbacks import on_list_unets
 from modules import sd_unet, shared
 
 from copy import deepcopy
 import tensorrt as trt
 import torch
+import gc
 import os
 
 from lib_trt.utils import trt_datatype_to_torch, OUTPUT_DIR
@@ -11,14 +13,16 @@ from lib_trt.database import TensorRTDatabase
 from lib_trt.logging import logger
 
 
-TensorRTDatabase.load()
 trt.init_libnvinfer_plugins(None, "")
 
 CPU = torch.device("cpu")
 GPU = torch.device("cuda")
 
+TensorRTDatabase.load()
+
 
 class TrtUnet:
+    dtype = torch.float16
 
     @staticmethod
     def load_unet(unet_name: str) -> "TrtUnet":
@@ -31,13 +35,17 @@ class TrtUnet:
     def __init__(self, engine_path: str):
         self.trt_logger = trt.Logger(trt.Logger.ERROR)
         self.runtime = trt.Runtime(self.trt_logger)
-
         with open(engine_path, "rb") as f:
             self.engine = self.runtime.deserialize_cuda_engine(f.read())
-
         self.context = self.engine.create_execution_context()
         self.cudaStream = torch.cuda.current_stream().cuda_stream
-        self.dtype = torch.float16
+
+    def __del__(self):
+        del self.cudaStream
+        del self.context
+        del self.engine
+        del self.runtime
+        del self.trt_logger
 
     def set_bindings_shape(self, inputs: dict, split_batch: int):
         for k in inputs:
@@ -116,12 +124,13 @@ class TrtUnet:
 
 
 class UnetOption(sd_unet.SdUnetOption):
-    def __init__(self, name: str):
+    def __init__(self, name: str, family: str):
         self.label = f"[TRT] {name}"
-        self.model_name = name
+        self.model_name = family
+        self.unet = name
 
     def create_unet(self):
-        return SDUnet(self.model_name)
+        return SDUnet(self.unet)
 
 
 class SDUnet(sd_unet.SdUnet):
@@ -131,36 +140,62 @@ class SDUnet(sd_unet.SdUnet):
         self.model_name = model_name
         self.configs = {"name": model_name, "backend": "trt"}
         self.cached_model: torch.nn.Module = None
-        self.engine = None
+        self.unet = None
 
     @torch.no_grad()
     def activate(self):
-        if getattr(self, "engine", None) is None:
-            setattr(self, "engine", TrtUnet.load_unet(self.model_name))
+        if self.unet is None:
+            self.unet = TrtUnet.load_unet(self.model_name)
             logger.info(f'Loaded Engine: "{self.model_name}"')
 
         if self.cached_model is None:
             unet = shared.sd_model.forge_objects.unet.model
             self.cached_model = deepcopy(unet.diffusion_model.to(CPU))
             del unet.diffusion_model
-            unet.diffusion_model = self.engine
+            unet.diffusion_model = self.unet
+
+        soft_empty_cache()
+        gc.collect()
 
     @torch.no_grad()
     def deactivate(self):
         if self.cached_model is not None:
             unet = shared.sd_model.forge_objects.unet.model
             del unet.diffusion_model
-            del self.engine
             unet.diffusion_model = deepcopy(self.cached_model).to(GPU)
             del self.cached_model
+            del self.unet
+            self.cached_model = None
+            self.unet = None
+
+        soft_empty_cache()
+        gc.collect()
 
 
 def list_unets(unet_list):
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     for obj in os.listdir(OUTPUT_DIR):
         filename, ext = os.path.splitext(obj)
+
         if ext == ".trt":
-            unet_list.append(UnetOption(filename))
+            family = TensorRTDatabase.get_family(filename)
+            unet_list.append(UnetOption(filename, family))
+
+    if getattr(shared.opts, "trt_auto_select", False):
+
+        class NullUnet(sd_unet.SdUnetOption):
+            def __init__(self):
+                self.label = "null"
+                self.model_name = None
+
+            def create_unet(self):
+                null = lambda: None
+                null.activate = lambda: None
+                null.deactivate = lambda: None
+                null.option = None
+                return null
+
+        unet_list.append(NullUnet())
 
 
 on_list_unets(list_unets)

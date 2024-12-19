@@ -214,6 +214,7 @@ class TensorRTConverter:
             del unet
             del inputs
 
+        del model
         model_management.unload_all_models()
         gc.collect()
 
