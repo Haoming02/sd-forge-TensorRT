@@ -1,5 +1,5 @@
 from ldm_patched.modules.model_management import soft_empty_cache
-from modules.script_callbacks import on_list_unets
+from modules.script_callbacks import on_list_unets, on_script_unloaded
 from modules import sd_unet, shared
 
 from copy import deepcopy
@@ -9,15 +9,13 @@ import gc
 import os
 
 from lib_trt.utils import trt_datatype_to_torch, OUTPUT_DIR
+from lib_trt.utils import logger as trt_logger
 from lib_trt.database import TensorRTDatabase
 from lib_trt.logging import logger
 
 
-trt.init_libnvinfer_plugins(None, "")
-
-CPU = torch.device("cpu")
-GPU = torch.device("cuda")
-
+CUDA_STREAM = torch.cuda.current_stream().cuda_stream
+RUNTIME = trt.Runtime(trt_logger)
 TensorRTDatabase.load()
 
 
@@ -33,19 +31,13 @@ class TrtUnet:
         return TrtUnet(unet_path)
 
     def __init__(self, engine_path: str):
-        self.trt_logger = trt.Logger(trt.Logger.ERROR)
-        self.runtime = trt.Runtime(self.trt_logger)
         with open(engine_path, "rb") as f:
-            self.engine = self.runtime.deserialize_cuda_engine(f.read())
+            self.engine = RUNTIME.deserialize_cuda_engine(f.read())
         self.context = self.engine.create_execution_context()
-        self.cudaStream = torch.cuda.current_stream().cuda_stream
 
     def __del__(self):
-        del self.cudaStream
         del self.context
         del self.engine
-        del self.runtime
-        del self.trt_logger
 
     def set_bindings_shape(self, inputs: dict, split_batch: int):
         for k in inputs:
@@ -118,7 +110,7 @@ class TrtUnet:
                 self.context.set_tensor_address(
                     k, x[(x.shape[0] // curr_split_batch) * i :].data_ptr()
                 )
-            self.context.execute_async_v3(stream_handle=self.cudaStream)
+            self.context.execute_async_v3(stream_handle=CUDA_STREAM)
 
         return out
 
@@ -138,7 +130,6 @@ class SDUnet(sd_unet.SdUnet):
     def __init__(self, model_name: str, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.model_name = model_name
-        self.configs = {"name": model_name, "backend": "trt"}
         self.cached_model: torch.nn.Module = None
         self.unet = None
 
@@ -150,11 +141,11 @@ class SDUnet(sd_unet.SdUnet):
 
         if self.cached_model is None:
             unet = shared.sd_model.forge_objects.unet.model
-            self.cached_model = deepcopy(unet.diffusion_model.to(CPU))
+            self.cached_model = deepcopy(unet.diffusion_model.cpu())
             del unet.diffusion_model
             unet.diffusion_model = self.unet
 
-        soft_empty_cache()
+        soft_empty_cache(force=True)
         gc.collect()
 
     @torch.no_grad()
@@ -162,13 +153,13 @@ class SDUnet(sd_unet.SdUnet):
         if self.cached_model is not None:
             unet = shared.sd_model.forge_objects.unet.model
             del unet.diffusion_model
-            unet.diffusion_model = deepcopy(self.cached_model).to(GPU)
+            unet.diffusion_model = deepcopy(self.cached_model).cuda()
             del self.cached_model
             del self.unet
             self.cached_model = None
             self.unet = None
 
-        soft_empty_cache()
+        soft_empty_cache(force=True)
         gc.collect()
 
 
@@ -198,4 +189,13 @@ def list_unets(unet_list):
         unet_list.append(NullUnet())
 
 
+def unload():
+    global CUDA_STREAM, RUNTIME
+    del CUDA_STREAM
+    del RUNTIME
+    gc.collect()
+    soft_empty_cache(force=True)
+
+
 on_list_unets(list_unets)
+on_script_unloaded(unload)

@@ -11,6 +11,7 @@ import gc
 import os
 
 from lib_trt.utils import TUTORIAL, TIMING_CACHE, TEMP_DIR, OUTPUT_DIR
+from lib_trt.utils import logger as trt_logger
 from lib_trt.database import TensorRTDatabase
 from lib_trt.tqdm import TQDMProgressMonitor
 from lib_trt.logging import logger
@@ -244,7 +245,6 @@ class TensorRTConverter:
             logger.error(f"Engine {output_trt} already exists...")
             return f"Engine {output_trt} already exists..."
 
-        trt_logger = trt.Logger(trt.Logger.WARNING)
         builder = trt.Builder(trt_logger)
 
         network = builder.create_network(

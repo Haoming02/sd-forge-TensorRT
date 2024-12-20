@@ -4,6 +4,7 @@ import tensorrt as trt
 import torch
 import os
 
+trt.init_libnvinfer_plugins(None, "")
 
 ext = os.path.dirname(os.path.realpath(__file__))
 TUTORIAL = os.path.join(os.path.dirname(ext), "lib_trt", "tutorial.md")
@@ -12,6 +13,8 @@ DATABASE = os.path.join(os.path.dirname(ext), "database.json")
 
 OUTPUT_DIR = os.path.normpath(os.path.join(models_path, "unet-trt"))
 TEMP_DIR = os.path.normpath(os.path.join(models_path, "unet-onnx"))
+
+logger = trt.Logger(trt.Logger.ERROR)
 
 
 def trt_datatype_to_torch(datatype):
