@@ -42,8 +42,9 @@ class TensorRTSelector(scripts.Script):
 
         unet = TensorRTDatabase.get_suitable(family, p.width, p.height)
         if unet is None:
-            logger.info("deselected engine")
-            setattr(shared.opts, "sd_unet", "null")
+            if option != "null":
+                logger.info("deselected engine")
+                setattr(shared.opts, "sd_unet", "null")
         elif unet != option:
             logger.info(f'selected "{unet}"')
             setattr(shared.opts, "sd_unet", unet)

@@ -1,4 +1,4 @@
-from ldm_patched.modules.model_management import soft_empty_cache, current_loaded_models
+from ldm_patched.modules.model_management import soft_empty_cache, current_loaded_models, get_torch_device
 from modules.script_callbacks import on_list_unets, on_script_unloaded
 from modules_forge.unet_patcher import UnetPatcher
 from modules_forge.forge_loader import ForgeSD
@@ -196,10 +196,11 @@ class SDUnet(sd_unet.SdUnet):
         m = shared.sd_model
 
         m.forge_objects = self.FSD.shallow_copy()
-        m.forge_objects_original = self.FSD.shallow_copy()
-        m.forge_objects_after_applying_lora = self.FSD.shallow_copy()
-
+        m.forge_objects.unet.load_device = get_torch_device()
         m.forge_objects.unet.model.diffusion_model.forward = self.original
+
+        m.forge_objects_original = m.forge_objects.shallow_copy()
+        m.forge_objects_after_applying_lora = m.forge_objects.shallow_copy()
 
         del self.FSD
         self.FSD = None
