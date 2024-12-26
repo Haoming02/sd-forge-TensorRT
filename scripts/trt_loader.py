@@ -1,8 +1,10 @@
-from ldm_patched.modules.model_management import soft_empty_cache
+from ldm_patched.modules.model_management import soft_empty_cache, current_loaded_models
 from modules.script_callbacks import on_list_unets, on_script_unloaded
+from modules_forge.unet_patcher import UnetPatcher
+from modules_forge.forge_loader import ForgeSD
 from modules import sd_unet, shared
 
-from copy import deepcopy
+from typing import Callable
 import tensorrt as trt
 import torch
 import gc
@@ -11,6 +13,7 @@ import os
 from lib_trt.utils import trt_datatype_to_torch, OUTPUT_DIR
 from lib_trt.utils import logger as trt_logger
 from lib_trt.database import TensorRTDatabase
+from lib_trt.patcher import LoadedEngine
 from lib_trt.logging import logger
 
 
@@ -120,44 +123,90 @@ class UnetOption(sd_unet.SdUnetOption):
         self.label = f"[TRT] {name}"
         self.model_name = family
         self.unet = name
+        self.mem = TensorRTDatabase.get_memory(family, name)
 
     def create_unet(self):
-        return SDUnet(self.unet)
+        return SDUnet(self.unet, self.mem)
 
 
 class SDUnet(sd_unet.SdUnet):
 
-    def __init__(self, model_name: str, *args, **kwargs):
+    def __init__(self, model_name: str, memory: int, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.memory_requirement = memory
         self.model_name = model_name
-        self.cached_model: torch.nn.Module = None
-        self.unet = None
+
+        self.original: Callable = None
+        self.unet: TrtUnet = None
+        self.FSD: ForgeSD = None
+
+    def __del__(self):
+        if self.unet is not None:
+            del self.unet
 
     @torch.no_grad()
     def activate(self):
-        if self.unet is None:
-            self.unet = TrtUnet.load_unet(self.model_name)
-            logger.info(f'Loaded Engine: "{self.model_name}"')
+        if self.FSD is not None:
+            return
 
-        if self.cached_model is None:
-            unet = shared.sd_model.forge_objects.unet.model
-            self.cached_model = deepcopy(unet.diffusion_model.cpu())
-            del unet.diffusion_model
-            unet.diffusion_model = self.unet
+        self.unet = TrtUnet.load_unet(self.model_name)
+        engine = LoadedEngine(self.unet, self.memory_requirement)
+        logger.info(f'Loaded Engine: "{self.model_name}"')
 
-        soft_empty_cache(force=True)
-        gc.collect()
+        m = shared.sd_model
+        objs = m.forge_objects
+
+        unet = objs.unet
+        assert isinstance(unet, UnetPatcher)
+
+        for loaded in current_loaded_models:
+            if loaded.model is unet:
+                logger.debug(f"Unloading: {loaded.model.__class__.__name__}")
+                current_loaded_models.remove(loaded)
+                loaded.model_unload()
+                del loaded
+
+                soft_empty_cache(force=True)
+                gc.collect()
+                break
+
+        current_loaded_models.insert(0, engine)
+        self.FSD = m.forge_objects_original.shallow_copy()
+
+        unet.load_device = unet.offload_device = torch.device("cpu")
+        assert isinstance(unet.model.diffusion_model.forward, Callable)
+        self.original = unet.model.diffusion_model.forward
+
+        unet.model.diffusion_model.forward = self.unet.__call__
+        m.forge_objects_original = objs.shallow_copy()
+        m.forge_objects_after_applying_lora = objs.shallow_copy()
 
     @torch.no_grad()
     def deactivate(self):
-        if self.cached_model is not None:
-            unet = shared.sd_model.forge_objects.unet.model
-            del unet.diffusion_model
-            unet.diffusion_model = deepcopy(self.cached_model).cuda()
-            del self.cached_model
-            del self.unet
-            self.cached_model = None
-            self.unet = None
+        if self.FSD is None:
+            return
+
+        for loaded in current_loaded_models:
+            if isinstance(loaded, LoadedEngine):
+                logger.debug(f"Unloading: {loaded.model.__class__.__name__}")
+                current_loaded_models.remove(loaded)
+                del loaded
+                break
+
+        m = shared.sd_model
+
+        m.forge_objects = self.FSD.shallow_copy()
+        m.forge_objects_original = self.FSD.shallow_copy()
+        m.forge_objects_after_applying_lora = self.FSD.shallow_copy()
+
+        m.forge_objects.unet.model.diffusion_model.forward = self.original
+
+        del self.FSD
+        self.FSD = None
+        del self.original
+        self.original = None
+        del self.unet
+        self.unet = None
 
         soft_empty_cache(force=True)
         gc.collect()

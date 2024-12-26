@@ -14,6 +14,9 @@ class UNetData:
     min_height: int
     max_height: int
 
+    def memory_requirement(self) -> int:
+        return 6 * 1024 * self.min_width * self.min_height
+
     def in_range(self, w: int, h: int) -> bool:
         return (
             self.min_width <= w <= self.max_width
@@ -117,3 +120,9 @@ class TensorRTDatabase:
                 return f"[TRT] {unet.filename}"
 
         return None
+
+    @classmethod
+    def get_memory(cls, family: str, filename: str) -> int:
+        for unet in cls.database[family]:
+            if unet.filename == filename:
+                return unet.memory_requirement()
