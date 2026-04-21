@@ -4,41 +4,25 @@
 # SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-import torch
-from torch.cuda import nvtx
-from collections import OrderedDict
-import numpy as np
-from polygraphy.backend.common import bytes_from_path
-from polygraphy import util
-from polygraphy.backend.trt import ModifyNetworkOutputs, Profile
-from polygraphy.backend.trt import (
-    engine_from_bytes,
-    engine_from_network,
-    network_from_onnx_path,
-    save_engine,
-)
-from polygraphy.logger import G_LOGGER
-
-# Support TensorRT-RTX
-TENSORRT_RTX_AVAILABLE = False
-import importlib
-
-if importlib.util.find_spec("tensorrt_rtx") is not None:
-    import tensorrt_rtx as trt
-
-    TENSORRT_RTX_AVAILABLE = True
-else:
-    import tensorrt as trt
-
-from logging import error, warning
-from tqdm import tqdm
 import copy
+import os.path
+from collections import OrderedDict
+from typing import Final
+
+import numpy as np
+import tensorrt_rtx as trt
+import torch
+from polygraphy.backend.trt import Profile
+from polygraphy.logger import G_LOGGER
+from torch.cuda import nvtx
+from tqdm import tqdm
+
+from lib_tensorrt import logger
 
 TRT_LOGGER = trt.Logger(trt.Logger.ERROR)
 G_LOGGER.module_severity = G_LOGGER.ERROR
 
-# Map of numpy dtype -> torch dtype
-numpy_to_torch_dtype_dict = {
+numpy_to_torch_dtype_dict: Final[dict[np.dtype, torch.dtype]] = {
     np.uint8: torch.uint8,
     np.int8: torch.int8,
     np.int16: torch.int16,
@@ -49,14 +33,10 @@ numpy_to_torch_dtype_dict = {
     np.float64: torch.float64,
     np.complex64: torch.complex64,
     np.complex128: torch.complex128,
+    np.bool_: torch.bool,
 }
-if np.version.full_version >= "1.24.0":
-    numpy_to_torch_dtype_dict[np.bool_] = torch.bool
-else:
-    numpy_to_torch_dtype_dict[np.bool] = torch.bool
 
-# Map of torch dtype -> numpy dtype
-torch_to_numpy_dtype_dict = {
+torch_to_numpy_dtype_dict: Final[dict[torch.dtype, np.dtype]] = {
     value: key for (key, value) in numpy_to_torch_dtype_dict.items()
 }
 
@@ -91,8 +71,7 @@ class TQDMProgressMonitor(trt.IProgressMonitor):
                 "parent_phase": parent_phase,
             }
         except KeyboardInterrupt:
-            # The phase_start callback cannot directly cancel the build, so request the cancellation from within step_complete.
-            _step_result = False
+            self._step_result = False
 
     def phase_finish(self, phase_name):
         try:
@@ -116,9 +95,8 @@ class TQDMProgressMonitor(trt.IProgressMonitor):
                         self._active_phases[phase_name]["parent_phase"]
                     ]["tq"].refresh()
                 del self._active_phases[phase_name]
-            pass
         except KeyboardInterrupt:
-            _step_result = False
+            self._step_result = False
 
     def step_complete(self, phase_name, step):
         try:
@@ -128,21 +106,17 @@ class TQDMProgressMonitor(trt.IProgressMonitor):
                 )
             return self._step_result
         except KeyboardInterrupt:
-            # There is no need to propagate this exception to TensorRT. We can simply cancel the build.
             return False
 
 
 class Engine:
-    def __init__(
-        self,
-        engine_path,
-    ):
-        self.engine_path = engine_path
+    def __init__(self, engine_path: os.PathLike):
+        self.engine_path: os.PathLike = engine_path
         self.engine = None
         self.context = None
         self.buffers = OrderedDict()
         self.tensors = OrderedDict()
-        self.cuda_graph_instance = None  # cuda graph
+        self.cuda_graph_instance = None
 
     def __del__(self):
         del self.engine
@@ -150,12 +124,10 @@ class Engine:
         del self.buffers
         del self.tensors
 
-    def reset(self, engine_path=None):
-        # del self.engine
+    def reset(self, *args, **kwargs):
         del self.context
         del self.buffers
         del self.tensors
-        # self.engine_path = engine_path
 
         self.context = None
         self.buffers = OrderedDict()
@@ -165,98 +137,66 @@ class Engine:
 
     def build(
         self,
-        onnx_path,
-        fp16,
-        input_profile=None,
-        enable_refit=False,
-        enable_preview=False,
-        enable_all_tactics=False,
-        timing_cache=None,
-        update_output_names=None,
-    ):
-        p = [Profile()]
-        if input_profile:
-            p = [Profile() for i in range(len(input_profile))]
-            for _p, i_profile in zip(p, input_profile):
-                for name, dims in i_profile.items():
-                    assert len(dims) == 3
-                    _p.add(name, min=dims[0], opt=dims[1], max=dims[2])
+        onnx_path: os.PathLike,
+        input_profile: list[tuple[int, int, int]],
+        enable_refit: bool = False,
+        enable_all_tactics: bool = False,
+    ) -> int:
+
+        p = [Profile() for _ in range(len(input_profile))]
+        for _p, i_profile in zip(p, input_profile):
+            for name, dims in i_profile.items():
+                assert len(dims) == 3
+                _p.add(name, min=dims[0], opt=dims[1], max=dims[2])
 
         config_kwargs = {}
         if not enable_all_tactics:
             config_kwargs["tactic_sources"] = []
 
-        if TENSORRT_RTX_AVAILABLE:
-            builder = trt.Builder(TRT_LOGGER)
-            network = builder.create_network(0)
-            parser = trt.OnnxParser(network, TRT_LOGGER)
-            success = parser.parse_from_file(onnx_path)
-            if not success:
-                raise RuntimeError(f"Failed to parse the ONNX file: {onnx_path}")
-        else:
-            network = network_from_onnx_path(
-                onnx_path, flags=[trt.OnnxParserFlag.NATIVE_INSTANCENORM]
-            )
-            if update_output_names:
-                print(f"Updating network outputs to {update_output_names}")
-                network = ModifyNetworkOutputs(network, update_output_names)
-            builder = network[0]
+        builder = trt.Builder(TRT_LOGGER)
+        network = builder.create_network(0)
+        parser = trt.OnnxParser(network, TRT_LOGGER)
+        success = parser.parse_from_file(onnx_path)
+        if not success:
+            raise RuntimeError(f"Failed to parse the ONNX file: {onnx_path}")
 
         config = builder.create_builder_config()
         config.progress_monitor = TQDMProgressMonitor()
-
-        # TensorRT-RTX only allows strongly typed networks, so precision is dependent on the model
-        (
-            config.set_flag(trt.BuilderFlag.FP16)
-            if fp16 and not TENSORRT_RTX_AVAILABLE
-            else None
-        )
-        config.set_flag(trt.BuilderFlag.REFIT) if enable_refit else None
+        if enable_refit:
+            config.set_flag(trt.BuilderFlag.REFIT)
 
         profiles = copy.deepcopy(p)
         for profile in profiles:
-            # Last profile is used for set_calibration_profile.
             calib_profile = profile.fill_defaults(
-                network[1] if not TENSORRT_RTX_AVAILABLE else network
-            ).to_trt(builder, network[1] if not TENSORRT_RTX_AVAILABLE else network)
+                network[1] if not True else network
+            ).to_trt(builder, network[1] if not True else network)
             config.add_optimization_profile(calib_profile)
 
         try:
-            if TENSORRT_RTX_AVAILABLE:
-                engine = builder.build_serialized_network(network, config)
-            else:
-                engine = engine_from_network(
-                    network,
-                    config,
-                )
+            engine = builder.build_serialized_network(network, config)
         except Exception as e:
-            error(f"Failed to build engine: {e}")
+            logger.error(f"Failed to build engine: {e}")
             return 1
+
         try:
-            if TENSORRT_RTX_AVAILABLE:
-                with open(self.engine_path, "wb") as f:
-                    f.write(engine)
-            else:
-                save_engine(engine, path=self.engine_path)
+            with open(self.engine_path, "wb") as f:
+                f.write(engine)
         except Exception as e:
-            error(f"Failed to save engine: {e}")
+            logger.error(f"Failed to save engine: {e}")
             return 1
+
         return 0
 
     def load(self):
-        if TENSORRT_RTX_AVAILABLE:
-            runtime = trt.Runtime(TRT_LOGGER)
-            with open(self.engine_path, "rb") as f:
-                engine_bytes = f.read()
-            buffer = memoryview(engine_bytes)
-            self.engine = runtime.deserialize_cuda_engine(buffer)
-        else:
-            self.engine = engine_from_bytes(bytes_from_path(self.engine_path))
+        runtime = trt.Runtime(TRT_LOGGER)
+        with open(self.engine_path, "rb") as f:
+            engine_bytes = f.read()
+        buffer = memoryview(engine_bytes)
+        self.engine = runtime.deserialize_cuda_engine(buffer)
 
-    def activate(self, reuse_device_memory=None):
+    def activate(self, reuse_device_memory=False):
         if reuse_device_memory:
             self.context = self.engine.create_execution_context_without_device_memory()
-        #    self.context.device_memory = reuse_device_memory
         else:
             self.context = self.engine.create_execution_context()
 
@@ -269,7 +209,6 @@ class Engine:
                 shape = shape_dict[binding]["shape"]
             else:
                 shape = self.context.get_tensor_shape(name)
-
             dtype = trt.nptype(self.engine.get_tensor_dtype(name))
             if self.engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT:
                 self.context.set_input_shape(name, shape)
@@ -283,31 +222,15 @@ class Engine:
         nvtx.range_push("set_tensors")
         for name, buf in feed_dict.items():
             self.tensors[name].copy_(buf)
-
         for name, tensor in self.tensors.items():
             self.context.set_tensor_address(name, tensor.data_ptr())
         nvtx.range_pop()
         nvtx.range_push("execute")
         noerror = self.context.execute_async_v3(stream)
         if not noerror:
-            raise ValueError("ERROR: inference failed.")
+            raise SystemError("inference failed...")
         nvtx.range_pop()
         return self.tensors
 
     def __str__(self):
-        out = ""
-
-        # When raising errors in the upscaler, this str() called by comfy's execution.py,
-        # but the engine won't have the attributes required for stringification
-        # If str() also raises an error, comfy gets soft-locked, not running prompts until restarted
-        if not hasattr(self.engine, "num_optimization_profiles") or not hasattr(
-            self.engine, "num_bindings"
-        ):
-            return out
-
-        for opt_profile in range(self.engine.num_optimization_profiles):
-            for binding_idx in range(self.engine.num_bindings):
-                name = self.engine.get_binding_name(binding_idx)
-                shape = self.engine.get_profile_shape(opt_profile, name)
-                out += f"\t{name} = {shape}\n"
-        return out
+        return f"[TRT] Engine ({os.path.basename(self.engine_path)})"
