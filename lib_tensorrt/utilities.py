@@ -1,23 +1,21 @@
-# https://github.com/NVIDIA/Stable-Diffusion-WebUI-TensorRT
+# https://github.com/NVIDIA/Stable-Diffusion-WebUI-TensorRT/blob/torch_tensorrt/utilities.py
 
 # Copyright 2022 The HuggingFace Inc. team.
 # SPDX-FileCopyrightText: Copyright (c) 1993-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-import copy
 import os.path
 from collections import OrderedDict
 from typing import Final
 
 import numpy as np
-import tensorrt_rtx as trt
+import tensorrt as trt
 import torch
-from polygraphy.backend.trt import Profile
+from polygraphy.backend.common import bytes_from_path
+from polygraphy.backend.trt import engine_from_bytes
 from polygraphy.logger import G_LOGGER
 from torch.cuda import nvtx
 from tqdm import tqdm
-
-from lib_tensorrt import logger
 
 TRT_LOGGER = trt.Logger(trt.Logger.ERROR)
 G_LOGGER.module_severity = G_LOGGER.ERROR
@@ -135,64 +133,11 @@ class Engine:
         self.inputs = {}
         self.outputs = {}
 
-    def build(
-        self,
-        onnx_path: os.PathLike,
-        input_profile: list[tuple[int, int, int]],
-        enable_refit: bool = False,
-        enable_all_tactics: bool = False,
-    ) -> int:
-
-        p = [Profile() for _ in range(len(input_profile))]
-        for _p, i_profile in zip(p, input_profile):
-            for name, dims in i_profile.items():
-                assert len(dims) == 3
-                _p.add(name, min=dims[0], opt=dims[1], max=dims[2])
-
-        config_kwargs = {}
-        if not enable_all_tactics:
-            config_kwargs["tactic_sources"] = []
-
-        builder = trt.Builder(TRT_LOGGER)
-        network = builder.create_network(0)
-        parser = trt.OnnxParser(network, TRT_LOGGER)
-        success = parser.parse_from_file(onnx_path)
-        if not success:
-            raise RuntimeError(f"Failed to parse the ONNX file: {onnx_path}")
-
-        config = builder.create_builder_config()
-        config.progress_monitor = TQDMProgressMonitor()
-        if enable_refit:
-            config.set_flag(trt.BuilderFlag.REFIT)
-
-        profiles = copy.deepcopy(p)
-        for profile in profiles:
-            calib_profile = profile.fill_defaults(
-                network[1] if not True else network
-            ).to_trt(builder, network[1] if not True else network)
-            config.add_optimization_profile(calib_profile)
-
-        try:
-            engine = builder.build_serialized_network(network, config)
-        except Exception as e:
-            logger.error(f"Failed to build engine: {e}")
-            return 1
-
-        try:
-            with open(self.engine_path, "wb") as f:
-                f.write(engine)
-        except Exception as e:
-            logger.error(f"Failed to save engine: {e}")
-            return 1
-
-        return 0
+    def build(self, *args, **kwargs):
+        raise NotImplementedError
 
     def load(self):
-        runtime = trt.Runtime(TRT_LOGGER)
-        with open(self.engine_path, "rb") as f:
-            engine_bytes = f.read()
-        buffer = memoryview(engine_bytes)
-        self.engine = runtime.deserialize_cuda_engine(buffer)
+        self.engine = engine_from_bytes(bytes_from_path(self.engine_path))
 
     def activate(self, reuse_device_memory=False):
         if reuse_device_memory:
@@ -200,36 +145,37 @@ class Engine:
         else:
             self.context = self.engine.create_execution_context()
 
-    def allocate_buffers(self, shape_dict=None, device="cuda"):
+    def allocate_buffers(self, shape_dict=None, device="cuda", additional_shapes=None):
         nvtx.range_push("allocate_buffers")
-        for idx in range(self.engine.num_io_tensors):
-            name = self.engine.get_tensor_name(idx)
-            binding = self.engine[idx]
-            if shape_dict and binding in shape_dict:
-                shape = shape_dict[binding]["shape"]
+        for binding in range(self.engine.num_io_tensors):
+            name = self.engine.get_tensor_name(binding)
+
+            if shape_dict and name in shape_dict:
+                shape = shape_dict[name].shape
+            elif additional_shapes and name in additional_shapes:
+                shape = additional_shapes[name]
             else:
                 shape = self.context.get_tensor_shape(name)
+
             dtype = trt.nptype(self.engine.get_tensor_dtype(name))
             if self.engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT:
                 self.context.set_input_shape(name, shape)
-            tensor = torch.empty(
+            tensor = torch.zeros(
                 tuple(shape), dtype=numpy_to_torch_dtype_dict[dtype]
             ).to(device=device)
-            self.tensors[binding] = tensor
+            self.tensors[name] = tensor
         nvtx.range_pop()
 
     def infer(self, feed_dict, stream, use_cuda_graph=False):
-        nvtx.range_push("set_tensors")
         for name, buf in feed_dict.items():
             self.tensors[name].copy_(buf)
         for name, tensor in self.tensors.items():
             self.context.set_tensor_address(name, tensor.data_ptr())
-        nvtx.range_pop()
-        nvtx.range_push("execute")
+
         noerror = self.context.execute_async_v3(stream)
         if not noerror:
             raise SystemError("inference failed...")
-        nvtx.range_pop()
+
         return self.tensors
 
     def __str__(self):
