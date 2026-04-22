@@ -1,0 +1,8 @@
+#tab_sd-forge-trt div.gradio-accordion>div:last-child {
+    padding: 1em;
+}
+
+#tab_sd-forge-trt div.gradio-accordion>button>span:first-child {
+    margin: auto !important;
+    font-weight: bolder !important;
+}
