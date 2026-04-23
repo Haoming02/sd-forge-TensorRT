@@ -6,3 +6,10 @@
     margin: auto !important;
     font-weight: bolder !important;
 }
+
+#tab_sd-forge-trt div.gradio-checkbox {
+    padding: 0.5em 1em !important;
+    margin-top: -0.5em !important;
+    border-radius: 0.5em !important;
+    background-color: var(--input-background-fill);
+}

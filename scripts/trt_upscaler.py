@@ -8,7 +8,7 @@ from functools import wraps
 import numpy as np
 import torch
 import tqdm
-from lib_tensorrt import logger
+from lib_tensorrt import get_dtype, logger
 from lib_tensorrt.paths import GAN_TRT
 from lib_tensorrt.utilities import Engine
 from PIL import Image
@@ -39,23 +39,13 @@ class UpscalerTRT(Upscaler):
                 ),
             )
 
-    @staticmethod
-    def _get_dtype(dtype: str) -> torch.dtype:
-        match dtype:
-            case "fp16":
-                return torch.float16
-            case "bf16":
-                return torch.bfloat16
-            case _:
-                return torch.float32
-
     @classmethod
     def do_upscale(cls, model: Engine, tile: Image.Image, dtype: torch.dtype):
         data = torch.from_numpy(np.array(tile)).to(dtype=dtype)
         img = data.permute(2, 0, 1).div_(255.0).clip_(0.0, 1.0).unsqueeze(0)
 
         result = model.infer({"input": img}, cls.cudaStream)
-        output: torch.Tensor = result["output"].squeeze(0)
+        output: torch.Tensor = result["output"].squeeze(0).float()
 
         output = output.mul_(255.0).round_().clip_(0.0, 255.0).permute(1, 2, 0)
         data = output.cpu().numpy().astype(np.uint8)
@@ -74,7 +64,7 @@ class UpscalerTRT(Upscaler):
             return img
         else:
             tile = int(tile)
-            dtype = self._get_dtype(dtype)
+            dtype = get_dtype(dtype)
 
         logger.info(f'Model: "{name}" (TileSize: {tile})')
 

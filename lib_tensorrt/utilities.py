@@ -8,7 +8,6 @@ import os.path
 from collections import OrderedDict
 from typing import Final
 
-import numpy as np
 import tensorrt as trt
 import torch
 from polygraphy.backend.common import bytes_from_path
@@ -20,22 +19,11 @@ from tqdm import tqdm
 TRT_LOGGER = trt.Logger(trt.Logger.ERROR)
 G_LOGGER.module_severity = G_LOGGER.ERROR
 
-numpy_to_torch_dtype_dict: Final[dict[np.dtype, torch.dtype]] = {
-    np.uint8: torch.uint8,
-    np.int8: torch.int8,
-    np.int16: torch.int16,
-    np.int32: torch.int32,
-    np.int64: torch.int64,
-    np.float16: torch.float16,
-    np.float32: torch.float32,
-    np.float64: torch.float64,
-    np.complex64: torch.complex64,
-    np.complex128: torch.complex128,
-    np.bool_: torch.bool,
-}
 
-torch_to_numpy_dtype_dict: Final[dict[torch.dtype, np.dtype]] = {
-    value: key for (key, value) in numpy_to_torch_dtype_dict.items()
+trt_to_torch_dtype_dict: Final[dict[trt.DataType, torch.dtype]] = {
+    trt.DataType.BF16: torch.bfloat16,
+    trt.DataType.HALF: torch.float16,
+    trt.DataType.FLOAT: torch.float32,
 }
 
 
@@ -157,12 +145,10 @@ class Engine:
             else:
                 shape = self.context.get_tensor_shape(name)
 
-            dtype = trt.nptype(self.engine.get_tensor_dtype(name))
+            dtype = trt_to_torch_dtype_dict[self.engine.get_tensor_dtype(name)]
             if self.engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT:
                 self.context.set_input_shape(name, shape)
-            tensor = torch.zeros(
-                tuple(shape), dtype=numpy_to_torch_dtype_dict[dtype]
-            ).to(device=device)
+            tensor = torch.zeros(tuple(shape), dtype=dtype).to(device=device)
             self.tensors[name] = tensor
         nvtx.range_pop()
 

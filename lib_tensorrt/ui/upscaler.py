@@ -19,12 +19,13 @@ def gan_ui():
             type="value",
             scale=4,
         )
-        button = gr.Button(
-            value="Export",
-            variant="primary",
-            interactive=bool(models),
-            scale=1,
-        )
+        with gr.Column(scale=1):
+            button = gr.Button(
+                value="Export",
+                variant="primary",
+                interactive=bool(models),
+            )
+            half = gr.Checkbox(False, label="Prefer Half Precision")
 
     with gr.Row():
         opt = gr.Slider(
@@ -46,7 +47,7 @@ def gan_ui():
             scale=7,
         )
 
-    for comp in (target, button, opt, its):
+    for comp in (target, button, half, opt, its):
         comp.do_not_save_to_config = True
 
     def _pre():
@@ -58,5 +59,5 @@ def gan_ui():
         return gr.update(interactive=True)
 
     button.click(fn=_pre, outputs=[button]).then(
-        fn=export_upscaler, inputs=[target, opt, its]
+        fn=export_upscaler, inputs=[target, opt, its, half]
     ).then(fn=_post, outputs=[button])
