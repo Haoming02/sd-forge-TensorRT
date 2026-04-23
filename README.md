@@ -23,6 +23,23 @@ This is an Extension for [Forge Neo](https://github.com/Haoming02/sd-webui-forge
 > [!Tip]
 > Use a low `Optimization Level` to see if the model actually works first
 
+## Benchmark
+
+- Running `2x-AnimeSharpV4_RCAN` on **RTX 3060**
+
+<table>
+	<tr align="center">
+		<th><b>fp32</b> (CPU Composite)</th>
+		<th><b>fp32</b> TensorRT</th>
+		<th><b>fp16</b> (GPU Composite)</th>
+	</tr>
+	<tr align="center">
+		<td>2.91 it/s</td>
+		<td>4.34 it/s</td>
+		<td>5.23 it/s</td>
+	</tr>
+</table>
+
 <hr>
 
 ### References
