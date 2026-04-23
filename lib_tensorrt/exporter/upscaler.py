@@ -9,10 +9,15 @@ from lib_tensorrt.paths import GAN_ONNX, GAN_TRT
 from backend import memory_management
 from modules.modelloader import load_spandrel_model
 from modules.shared import opts
+from modules.timer import Timer
+
+_EXPORT_TIMER = Timer(False)
 
 
 @torch.inference_mode()
 def export_upscaler(path: os.PathLike, opt: int, its: int):
+    _EXPORT_TIMER.reset()
+
     dim = int(getattr(opts, "ESRGAN_tile", 512) or 512)
     dtype = "fp32"  # TODO
     logger.info(f'Baking {dim}x{dim} Engine ({dtype}) for "{os.path.basename(path)}"')
@@ -23,12 +28,20 @@ def export_upscaler(path: os.PathLike, opt: int, its: int):
     trt_path: os.PathLike = os.path.join(GAN_TRT, _base + ".trt")
 
     if not os.path.isfile(onnx_path):
-        _build_onnx(path, dim, onnx_path)
+        try:
+            _build_onnx(path, dim, onnx_path)
+        except Exception:
+            logger.error(f"[TRT] Failed to export Onnx Model...")
 
     if not os.path.isfile(trt_path):
-        _build_trt(dim, onnx_path, trt_path, opt, its)
+        try:
+            _build_trt(dim, onnx_path, trt_path, opt, its)
+        except Exception:
+            logger.error(f"[TRT] Failed to export TRT Model...")
     else:
         logger.warning(f'Engine "{os.path.basename(trt_path)}" already exists...')
+
+    print("Took: " + _EXPORT_TIMER.summary())
 
 
 def _build_onnx(path: str, dim: int, onnx_path: str):
@@ -37,13 +50,14 @@ def _build_onnx(path: str, dim: int, onnx_path: str):
     descriptor = load_spandrel_model(path, memory_management.cpu, prefer_half=False)
     model: torch.nn.Module = descriptor.model
 
+    _EXPORT_TIMER.record("Load Upscaler")
+    logger.info("> Exporting .onnx Model...")
+
     inputs: torch.Tensor = torch.zeros(
         (1, 3, dim, dim),
         dtype=torch.float32,
         device=memory_management.cpu,
     )
-
-    logger.info("> Exporting .onnx Model...")
 
     with warnings.catch_warnings():
         warnings.simplefilter(action="ignore", category=torch.jit.TracerWarning)
@@ -60,6 +74,7 @@ def _build_onnx(path: str, dim: int, onnx_path: str):
         )
 
     logger.info("> Success!")
+    _EXPORT_TIMER.record("Export Onnx")
 
 
 def _build_trt(dim: int, onnx_path: str, trt_path: str, opt: int, its: int):
@@ -74,10 +89,9 @@ def _build_trt(dim: int, onnx_path: str, trt_path: str, opt: int, its: int):
 
     parser = trt.OnnxParser(network, trt_logger)
     success = parser.parse_from_file(onnx_path)
-    if not success:
-        logger.error(f"[TRT] Failed to parse the Onnx Model...")
-        return
+    assert success
 
+    _EXPORT_TIMER.record("Parse Onnx")
     logger.info("> Exporting .trt Model...")
 
     profile = builder.create_optimization_profile()
@@ -89,3 +103,4 @@ def _build_trt(dim: int, onnx_path: str, trt_path: str, opt: int, its: int):
         f.write(serialized_engine)
 
     logger.info("> Success!")
+    _EXPORT_TIMER.record("Export TRT")
